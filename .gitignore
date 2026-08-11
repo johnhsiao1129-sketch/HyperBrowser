@@ -44,7 +44,6 @@ _start_chrome.py
 .omo/
 
 # ===== 损坏文件（整文件为 NUL 字节，内容已丢失）=====
-README.md
 API.md
 AGENTS.md
 examples/basic_usage.py
