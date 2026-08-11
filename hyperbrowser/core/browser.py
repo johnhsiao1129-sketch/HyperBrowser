@@ -198,6 +198,43 @@ class StealthBrowserManager:
         })
         """)
 
+    async def _cdp_connect(self, cdp_url: str, timeout: float = 30.0, operation: str = "connect_over_cdp") -> Browser:
+        """
+        连接外部 Chrome（CDP），带超时保护。
+
+        上一个子进程刚退出时 CDP websocket 可能半关闭（连接未完全释放），
+        connect_over_cdp() 内部无超时会无限等待 → 浏览器 tab 冻结转圈。
+        统一走本 helper：start() 与 connect_over_cdp() 均用 asyncio.wait_for
+        包裹；超时抛 TimeoutError（带操作名 + cdp_url），并清理半初始化现场。
+        """
+        try:
+            self._playwright = await asyncio.wait_for(
+                async_playwright().start(), timeout=timeout
+            )
+            browser = await asyncio.wait_for(
+                self._playwright.chromium.connect_over_cdp(cdp_url), timeout=timeout
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            await self._reset_after_cdp_failure()
+            raise TimeoutError(f"{operation} timeout after {timeout:g}s: {cdp_url}")
+        except Exception:
+            await self._reset_after_cdp_failure()
+            raise
+        return browser
+
+    async def _reset_after_cdp_failure(self):
+        """CDP 连接失败/超时后清理现场，避免半初始化状态污染后续重试。"""
+        pw = self._playwright
+        self._playwright = None
+        self._connected = False
+        self._context = None
+        self._page = None
+        if pw is not None:
+            try:
+                await asyncio.wait_for(pw.stop(), timeout=5)
+            except Exception:
+                pass
+
     async def connect_over_cdp(self, cdp_url: str) -> Page:
         """
         连接到已存在的浏览器（通过 CDP）
@@ -212,9 +249,7 @@ class StealthBrowserManager:
         Returns:
             Page: 连接后的页面对象
         """
-        self._playwright = await async_playwright().start()
-
-        browser = await self._playwright.chromium.connect_over_cdp(cdp_url)
+        browser = await self._cdp_connect(cdp_url)
         self._context = browser.contexts[0] if browser.contexts else await browser.new_context()
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
 
@@ -254,8 +289,7 @@ class StealthBrowserManager:
             return tabs
 
         # 回退：外部 CDP
-        self._playwright = await async_playwright().start()
-        browser = await self._playwright.chromium.connect_over_cdp("http://127.0.0.1:9222")
+        browser = await self._cdp_connect("http://127.0.0.1:9222", operation="list_tabs")
 
         tabs = []
         pages = browser.contexts[0].pages if browser.contexts else []
@@ -270,7 +304,8 @@ class StealthBrowserManager:
                 tabs.append({"index": i, "url": page.url, "title": None})
 
         await browser.close()
-        await self._playwright.stop()
+        if self._playwright is not None:
+            await self._playwright.stop()
         self._playwright = None
 
         return tabs
@@ -299,8 +334,7 @@ class StealthBrowserManager:
         Raises:
             ValueError: 未找到匹配的标签页
         """
-        self._playwright = await async_playwright().start()
-        browser = await self._playwright.chromium.connect_over_cdp("http://127.0.0.1:9222")
+        browser = await self._cdp_connect("http://127.0.0.1:9222", operation="attach_to_tab")
         context = browser.contexts[0] if browser.contexts else await browser.new_context()
 
         # FIX (v2): Bypass Target.attachToTarget entirely. The previous
@@ -370,12 +404,7 @@ class StealthBrowserManager:
         Returns:
             tuple: (BrowserContext, Page)
         """
-        self._playwright = await async_playwright().start()
-
-        if context_id:
-            browser = await self._playwright.chromium.connect_over_cdp(cdp_url)
-        else:
-            browser = await self._playwright.chromium.connect_over_cdp(cdp_url)
+        browser = await self._cdp_connect(cdp_url, operation="connect_over_cdp_with_context")
 
         self._context = browser.contexts[0] if browser.contexts else await browser.new_context()
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
