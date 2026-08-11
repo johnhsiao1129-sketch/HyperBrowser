@@ -19,7 +19,9 @@ test_profile_real2/
 backup/
 backups/
 
-# ===== 求职/页面数据（本地真实数据见 backups/，仓库内仅空格式占位）=====
+# ===== 求职/页面数据（与 hyper 项目无关的残留数据，禁止推送）=====
+boss_jobs.json
+boss_page.html
 
 # ===== 环境/调试残留 =====
 40.8.0
