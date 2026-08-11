@@ -1,0 +1,55 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+
+# ===== 浏览器 profile（含用户数据，禁止推送）=====
+test_profile_*/
+test_profile_browser/
+test_profile_debug/
+test_profile_minimal/
+test_profile_real/
+test_profile_real2/
+
+# ===== 本地备份 =====
+backup/
+backups/
+
+# ===== 求职/页面数据 =====
+boss_jobs.json
+boss_page.html
+
+# ===== 环境/调试残留 =====
+40.8.0
+nul
+介绍.txt
+
+# ===== 根目录开发脚本（非库代码）=====
+get_popup_ref.py
+test_chat_send.py
+test_popup_click.py
+_copy_jobs.py
+_diag_dialog.py
+_diag_dialog2.py
+_start_chrome.py
+
+# ===== 本地工具链目录 =====
+.anything-graph/
+.codegraph/
+.mindscape/
+.omo/
+
+# ===== 损坏文件（整文件为 NUL 字节，内容已丢失）=====
+README.md
+API.md
+AGENTS.md
+examples/basic_usage.py
+examples/v2_usage_examples.py
+tests/smoke_test_new_modules.py
+tests/test_all_new_modules.py
+tests/test_debug_browser.py
+tests/test_real_browser.py
