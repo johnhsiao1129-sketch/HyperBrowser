@@ -149,10 +149,23 @@ class StealthBrowserManager:
 
     async def close(self):
         """关闭浏览器"""
-        if self._context:
+        # 修复转圈根因 (2026-08-12): CDP 模式 (连接外部 Chrome) 下
+        # 不能调用 self._context.close() —— context 属于外部浏览器进程，
+        # 调用会触发 "BrowserContext.close: 'NoneType' object has no attribute
+        # 'send'" (patchright 1.58.2 长 CDP session RPC hang)，子进程不退出
+        # → CDP 连接不释放 → 浏览器 tab 冻结一直转圈。
+        # CDP 模式只 stop playwright driver 干净断开即可。
+        if self._context and not self._connected:
             await self._context.close()
         if self._playwright:
-            await self._playwright.stop()
+            try:
+                # stop() 也是 RPC 调用，长 CDP session 后 driver RPC 可能已坏
+                # 同样会 hang → 子进程不退出 → CDP 不释放 → tab 冻结。
+                # 加 10s 超时: 卡住就放弃，进程退出时 OS 终止 driver。
+                await asyncio.wait_for(self._playwright.stop(), timeout=10)
+            except Exception:
+                pass
+            self._playwright = None
 
     @property
     def page(self) -> Page:
