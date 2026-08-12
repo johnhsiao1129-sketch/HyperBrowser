@@ -14,7 +14,13 @@ _EXTRACT_INTERACTIVE_JS = """
     const selectors = [
         'a', 'button', 'input', 'select', 'textarea',
         '[role="button"]', '[role="link"]', '[role="checkbox"]',
-        '[role="radio"]', '[role="tab"]', '[onclick]'
+        '[role="radio"]', '[role="tab"]', '[onclick]',
+        // 2026-08-12: 扩展覆盖 contenteditable/ARIA 可交互/可聚焦元素
+        // 根因: Boss chat composer 是 <div contenteditable="true" class="chat-input">,
+        // 旧选择器全部漏掉 → snapshot 永远不返 ref → 消费方 _boss_find_real_ref
+        // 按 class_contains="chat-input" 匹配恒 False
+        '[contenteditable="true"]', '[contenteditable=""]',
+        '[role="textbox"]', '[role="combobox"]', '[tabindex]'
     ];
     const seen = new Set();
     const results = [];
