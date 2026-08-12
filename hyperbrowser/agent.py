@@ -6,6 +6,7 @@ HyperBrowser Agent 主类
 第3层：批处理执行器（核心引擎）
 """
 
+import asyncio
 import json
 from typing import Optional, List, Dict, Any
 
@@ -236,6 +237,62 @@ class HyperBrowserAgent:
         if self.verbose:
             print("[HyperBrowser] Browser closed")
 
+    async def _reconnect(self):
+        """断开并重建浏览器连接（操作失败自愈用）。
+
+        注意: executor / snapshot_extractor / action_dispatcher 构造时持有
+        page 引用（长 CDP session 下 page 是固定对象）, 重连后必须全部重建,
+        否则操作的还是旧连接的死 page。dialog handler / ssrf guard 同理重装。
+
+        attach_to_tab 模式（无 cdp_endpoint）会退化为 start() 新起浏览器。
+        """
+        if self._browser_manager is None:
+            raise RuntimeError("Agent not started. Call start() first.")
+        try:
+            await self._browser_manager.close()
+        except Exception:
+            pass
+        if self.cdp_endpoint:
+            page = await self._browser_manager.connect_over_cdp(self.cdp_endpoint)
+        else:
+            page = await self._browser_manager.start()
+
+        self._executor = BatchExecutor(page, humanize=True)
+        self._snapshot_extractor = SnapshotExtractor(page)
+        self._action_dispatcher = EnhancedActionDispatcher(page)
+
+        if self.dialog_handler is not None:
+            try:
+                await self.dialog_handler.install(page)
+            except Exception:
+                pass
+        if self.ssrf_guard is not None:
+            try:
+                await self.ssrf_guard.install(page)
+            except Exception:
+                pass
+        if self.verbose:
+            print(f"[HyperBrowser] Reconnected ({'cdp' if self.cdp_endpoint else 'local'})")
+
+    async def _run_with_reconnect(self, operation: str, coro_fn, timeout: float = 30.0):
+        """操作级超时 + 失败自愈（仅连接类异常触发重连）。
+
+        长 CDP session 下 RPC 可能撞上半关闭 websocket 无限等待（浏览器 tab
+        冻结转圈）或抛连接错误。包一层 asyncio.wait_for；超时 / ConnectionError /
+        OSError → 断开重连（内部走 browser.py 全链路超时 + Job Object 兜底）→
+        重试 1 次。
+
+        仅失败时重连、正常保持连接 —— 避免"每次操作即用即走"断开重连引入
+        新的半关闭窗口。非连接类异常（如 selector 未找到）原样抛出不重连。
+        """
+        try:
+            return await asyncio.wait_for(coro_fn(), timeout=timeout)
+        except (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError) as e:
+            if self.verbose:
+                print(f"[HyperBrowser] {operation} {type(e).__name__}: reconnecting & retry once")
+            await self._reconnect()
+            return await asyncio.wait_for(coro_fn(), timeout=timeout)
+
     async def get_content_after_render(self, selector: str = None, timeout: int = 10000) -> str:
         """
         获取页面内容（等待 JavaScript 渲染完成后）
@@ -262,7 +319,7 @@ class HyperBrowserAgent:
         """获取当前页面快照"""
         if not self._snapshot_extractor:
             raise RuntimeError("Agent not started. Call start() first.")
-        return await self._snapshot_extractor.extract()
+        return await self._run_with_reconnect("get_snapshot", self._snapshot_extractor.extract)
 
     async def navigate(self, url: str) -> BatchResult:
         """导航到指定 URL"""
@@ -346,7 +403,8 @@ class HyperBrowserAgent:
             locator=locator,
             description=description
         )
-        await self._executor._execute_action(action)
+        executor = self._executor
+        await self._run_with_reconnect("click", lambda: executor._execute_action(action))
         return await self.get_snapshot()
 
     async def input(self, selector: str, text: str, timeout: int = 5000) -> PageSnapshot:
@@ -373,7 +431,8 @@ class HyperBrowserAgent:
             value=text,
             description=f"输入到 {selector}"
         )
-        await self._executor._execute_action(action)
+        executor = self._executor
+        await self._run_with_reconnect("input", lambda: executor._execute_action(action))
         return await self.get_snapshot()
 
     async def wait(self, ms: int = 1000) -> PageSnapshot:
@@ -397,7 +456,8 @@ class HyperBrowserAgent:
             value=str(ms),
             description=f"等待 {ms}ms"
         )
-        await self._executor._execute_action(action)
+        executor = self._executor
+        await self._run_with_reconnect("wait", lambda: executor._execute_action(action))
         return await self.get_snapshot()
 
     async def scroll(self, pixels: int = 0, timeout: int = 5000) -> PageSnapshot:
@@ -423,7 +483,8 @@ class HyperBrowserAgent:
             value=str(pixels) if pixels else "",
             description=f"滚动 {pixels or '一个屏幕'} 像素"
         )
-        await self._executor._execute_action(action)
+        executor = self._executor
+        await self._run_with_reconnect("scroll", lambda: executor._execute_action(action))
         return await self.get_snapshot()
 
     async def hover(self, selector: str, timeout: int = 5000) -> PageSnapshot:
@@ -448,7 +509,8 @@ class HyperBrowserAgent:
             locator={"type": "css", "value": selector},
             description=f"悬停 {selector}"
         )
-        await self._executor._execute_action(action)
+        executor = self._executor
+        await self._run_with_reconnect("hover", lambda: executor._execute_action(action))
         return await self.get_snapshot()
 
     async def press(self, key: str, timeout: int = 5000) -> PageSnapshot:
@@ -474,7 +536,8 @@ class HyperBrowserAgent:
             value=key,
             description=f"按键 {key}"
         )
-        await self._executor._execute_action(action)
+        executor = self._executor
+        await self._run_with_reconnect("press", lambda: executor._execute_action(action))
         return await self.get_snapshot()
 
     async def select(self, selector: str, value: str, timeout: int = 5000) -> PageSnapshot:
@@ -501,7 +564,8 @@ class HyperBrowserAgent:
             value=value,
             description=f"选择 {selector} = {value}"
         )
-        await self._executor._execute_action(action)
+        executor = self._executor
+        await self._run_with_reconnect("select", lambda: executor._execute_action(action))
         return await self.get_snapshot()
 
     async def execute_js(self, script: str) -> PageSnapshot:
@@ -526,7 +590,8 @@ class HyperBrowserAgent:
             value=script,
             description="执行 JS"
         )
-        await self._executor._execute_action(action)
+        executor = self._executor
+        await self._run_with_reconnect("execute_js", lambda: executor._execute_action(action))
         return await self.get_snapshot()
 
     async def evaluate_js(self, script: str) -> Any:
@@ -558,8 +623,7 @@ class HyperBrowserAgent:
         if not self._browser_manager:
             raise RuntimeError("Agent not started. Call start() first.")
 
-        result = await self.page.evaluate(script)
-        return result
+        return await self._run_with_reconnect("evaluate_js", lambda: self.page.evaluate(script))
 
     async def evaluate_js_raw(self, script: str) -> Any:
         """
