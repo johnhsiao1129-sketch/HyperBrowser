@@ -168,6 +168,19 @@ class StealthBrowserManager:
         # CDP 模式只 stop playwright driver 干净断开即可。
         if self._context and not self._connected:
             await self._context.close()
+        # 修复 CDP tab 转圈最后一环 (2026-08-13): connect_over_cdp / attach_to_tab /
+        # connect_over_cdp_with_context 三条路径缓存了 self._browser (= CDP Browser 对象),
+        # close() 必须先主动发 Browser.close (CDP Target.close) 给浏览器, 让 Chrome
+        # 立即清理 tab 内部状态 (包括 renderer/spinner), 否则后续仅 pw.stop() + 杀 driver
+        # 是被动断开 — Chrome 端可能短暂卡在 "客户端掉线但状态未释放" 窗口.
+        # 同样加 5s 超时 (patchright 长 CDP session RPC hang 已知问题, 不加超时 = close() 自身挂死).
+        if self._browser is not None:
+            try:
+                await asyncio.wait_for(self._browser.close(), timeout=5)
+            except Exception as e:
+                if self.verbose:
+                    print(f"[HyperBrowser] self._browser.close() failed: {e}")
+            self._browser = None
         if self._playwright:
             try:
                 # stop() 也是 RPC 调用，长 CDP session 后 driver RPC 可能已坏
@@ -487,6 +500,10 @@ class StealthBrowserManager:
         browser = await self._cdp_connect(cdp_url)
 
         async def _init():
+            # 缓存 browser 对象给 close() 主动发 CDP Target.close (2026-08-13):
+            # 不缓存则 close() 读不到 → 只能 pw.stop() + 杀 driver, Chrome 端 tab
+            # 状态被动断开可能短暂转圈; 主动 close 让 Chrome 立即清理 tab 内部状态.
+            self._browser = browser
             self._context = browser.contexts[0] if browser.contexts else await browser.new_context()
             self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
 
@@ -662,6 +679,10 @@ class StealthBrowserManager:
         browser = await self._cdp_connect(cdp_url, operation="connect_over_cdp_with_context")
 
         async def _init():
+            # 缓存 browser 对象给 close() 主动发 CDP Target.close (2026-08-13):
+            # 同 connect_over_cdp, 不缓存则 close() 读不到 → Chrome 端 tab 状态
+            # 被动断开可能短暂转圈.
+            self._browser = browser
             self._context = browser.contexts[0] if browser.contexts else await browser.new_context()
             self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
 
