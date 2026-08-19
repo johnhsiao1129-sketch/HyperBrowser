@@ -198,6 +198,27 @@ class StealthBrowserManager:
             # 已死进程无副作用)。
             self._release_driver_jobs()
 
+    def __del__(self):
+        """进程退出 / GC 时同步兜底清理 — 即使脚本从未调 close() 残留 driver 也会被 kill。
+
+        patchright driver 是独立子进程 (node.exe run-driver), python 进程退出时不会
+        自动死, 必须显式同步触发强杀。否则残留 driver 半关闭 websocket 占着 9222 端口,
+        下一个 subprocess connect 时撞上 → 卡死 30s × N (5b4b753/b5e13ef 历史 bug 链路)。
+
+        注意: __del__ 是 GC 钩子不能 await — 全部走同步路径. Job Object 在进程崩溃 (os._exit
+        / kill) 时兜底强杀 driver, 与本 __del__ 形成双重保险。
+        """
+        try:
+            # 1. Job Object handle 关闭 = OS 级强杀 job 内仍存活的 driver (同步, 无 hang)
+            self._release_driver_jobs()
+        except Exception:
+            pass
+        try:
+            # 2. 强杀本次进程相关的孤儿 driver (同步, 不需 await)
+            self._kill_orphan_cdp_drivers()
+        except Exception:
+            pass
+
     @property
     def page(self) -> Page:
         """获取当前页面"""
@@ -613,6 +634,7 @@ class StealthBrowserManager:
         # the CDP channel correctly when we use these page objects.
 
         async def _init():
+            # self._browser = browser 由 L652 统一赋值 (commit 929cdf1 加的)
             context = browser.contexts[0] if browser.contexts else await browser.new_context()
 
             page_url = None
