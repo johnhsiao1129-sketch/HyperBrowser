@@ -15,6 +15,40 @@ except ImportError:
     from playwright.async_api import async_playwright, Page, BrowserContext, Browser
 
 
+# CDP 连接层瞬时失败判定 (string-based, 兼容 patchright / playwright 双实现).
+# 何时值得 retry (区别于 ValueError/TypeError 等编程错误):
+#   1. 标准连接层异常 (ConnectionError / OSError / TimeoutError)
+#   2. patchright 'Connection closed while reading from the driver' (RPC 层撞半死 WS)
+#   3. 'Connection refused' / 'ECONNREFUSED' (port 未开或 driver 已被杀)
+#   4. 'WebSocket closed' / 'connection reset' (WS 握手后被踢)
+# 2026-08-19 job-hunter 报告: 多进程共享同一 Chrome (9222) 时, caller 已跑多次
+# page.evaluate 后 WS 累积半死, 新 driver 的 connect_over_cdp 撞上即失败.
+# 重试 1 次 (新 driver = 新 WS 握手, 旧 driver 被 KILL_ON_JOB_CLOSE 强杀) 通常自愈.
+_CONNECTION_LAYER_ERROR_MARKERS = (
+    "connection closed",
+    "connection refused",
+    "websocket closed",
+    "connection reset",
+    "econnrefused",
+)
+
+
+def _is_connection_layer_error(e: BaseException) -> bool:
+    """CDP 连接层瞬时失败识别 (决定 _cdp_connect 是否 retry).
+
+    返回 True → retry (清 driver + sleep + 重连).
+    返回 False → raise (编程错误如 ValueError, 不应 retry).
+
+    [2026-08-19 job-hunter bug 报告]: 修复前 patchright 'Connection closed while
+    reading from the driver' 在 _cdp_connect 的 except Exception 分支被无条件
+    raise, 导致 caller 一次失败后立即 502. 加本判定后同一失败自动重试 1 次.
+    """
+    if isinstance(e, (ConnectionError, OSError, asyncio.TimeoutError, TimeoutError)):
+        return True
+    msg = str(e).lower()
+    return any(marker in msg for marker in _CONNECTION_LAYER_ERROR_MARKERS)
+
+
 class StealthBrowserManager:
     """
     隐形浏览器管理器
@@ -282,9 +316,22 @@ class StealthBrowserManager:
                 last_exc = TimeoutError(f"{operation} timeout after {timeout:g}s: {cdp_url}")
                 if attempt == 0:
                     await asyncio.sleep(0.5)  # 半关闭窗口瞬时，让 CDP 释放连接后重试
-            except Exception:
-                await self._reset_after_cdp_failure()
-                raise
+            except Exception as e:
+                # [2026-08-19 job-hunter 报告] patchright 'Connection closed while
+                # reading from the driver' 是 caller 端 CDP RPC 累积瞬时撞车 (caller
+                # 已用同一 Chrome 跑多次 page.evaluate, WS 半死). 修复前本 except
+                # 无条件 raise → caller 一次失败后立即 502. 现在: 连接层错误走 retry 1 次
+                # (清 driver + 1s 让 caller WS 释放 + 新 driver 新 WS 握手). 与
+                # TimeoutError 路径同模式, 区别仅在 sleep 更长 (1s vs 0.5s) 因为
+                # Connection closed 通常 caller 还在 evaluate 占着 WS. 非连接层错误
+                # (ValueError/TypeError) 不重试, 直接 raise.
+                if attempt == 0 and _is_connection_layer_error(e):
+                    await self._reset_after_cdp_failure()
+                    last_exc = e
+                    await asyncio.sleep(1.0)
+                else:
+                    await self._reset_after_cdp_failure()
+                    raise
         raise last_exc or TimeoutError(f"{operation} timeout after {timeout:g}s: {cdp_url}")
 
     async def _reset_after_cdp_failure(self):
