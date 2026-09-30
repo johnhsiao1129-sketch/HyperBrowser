@@ -18,7 +18,8 @@ SERVER_INSTRUCTIONS = """# HyperBrowser — 反检测浏览器自动化
 
 ## 接入已有浏览器
 
-`browser_scan`（探测 9222-9230 端口）→ `browser_connect`（选端点）→ 后续操作在新浏览器执行
+`browser_scan`（探测 9222-9230 端口）→ `browser_connect`（选端点）→ 后续操作在新浏览器执行。
+`config.cdp_endpoint` 决定底层走 `connect_over_cdp()`（接管现有 Chrome）还是 `launch_persistent_context()`（开新 Chrome）。
 
 ## 意图 → 工具
 
@@ -40,6 +41,7 @@ SERVER_INSTRUCTIONS = """# HyperBrowser — 反检测浏览器自动化
 - **同一 ref 反复用** — DOM 变化后 ref 过期，调 browser_snapshot 取新 ref。
 - **evaluate 跑耗时 JS** — 30s 超时，拆小段执行。
 - **浏览器启动失败** — 关掉已打开的同 profile Chrome（lockfile 冲突）。
+- **MCP 报错被吞** — timeout 常被吞为 "MCP error -32001"。直接 Python 调用 chromium/patchright 拿真实异常。
 
 ## 配置
 

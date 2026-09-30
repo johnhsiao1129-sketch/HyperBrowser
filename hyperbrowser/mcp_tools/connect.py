@@ -17,7 +17,7 @@ _pending_endpoint: str | None = None
 
 TOOL = Tool(
     name="browser_connect",
-    description="切换到指定 CDP 端口的浏览器。先调 browser_scan 发现可用端口。切换后后续操作在新浏览器执行。",
+    description="切换到指定 CDP 端口的浏览器。先调 browser_scan 发现可用端口。切换后后续操作在新浏览器执行。\n\n⚠️ 浏览器失控/无响应时，先用本工具对同一 cdp_endpoint 重连再考虑 kill。CDP attach 可能进入半连接：找不到目标 tab 不等于失败，需外层 timeout 兜底。",
     inputSchema={
         "type": "object",
         "properties": {

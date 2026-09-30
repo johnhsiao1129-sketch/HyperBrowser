@@ -104,6 +104,7 @@ class StealthBrowserManager:
             "--disable-component-extensions-with-background-pages",
             "--disable-default-apps",
             "--disable-extensions",
+            "--disable-external-extensions",
             "--disable-sync",
             "--disable-background-timer-throttling",
             "--disable-backgrounding-occluded-windows",
@@ -169,7 +170,22 @@ class StealthBrowserManager:
             await self._page.add_init_script(script)
 
     async def start(self) -> Page:
-        """启动隐形浏览器"""
+        """启动隐形浏览器。
+
+        两种模式（与 HyperBrowserAgent.start() 对齐）：
+        - 默认（无 cdp_endpoint）：launch_persistent_context 起新 Chrome
+        - 接管（有 cdp_endpoint）：复用 connect_over_cdp() 接管已有 Chrome
+
+        [2026-09-26] 加 cdp_endpoint 分支，让直接调用方（ProfileManager /
+        browser_doctor 等）也能接管已有 Chrome，无需绕过 agent 层。
+        接管路径复用 connect_over_cdp() → _cdp_connect() 现有全套保护
+        （超时 + retry + ConnectionLayer 判定 + Job Object + 孤儿 driver 强杀）。
+        """
+        # 接管模式：复用现有 connect_over_cdp()，零代码重复
+        if self.cdp_endpoint:
+            return await self.connect_over_cdp(self.cdp_endpoint)
+
+        # 原 launch_persistent_context 路径完全保留
         self._release_driver_jobs()
         self._playwright = await async_playwright().start()
         self._bind_current_driver()

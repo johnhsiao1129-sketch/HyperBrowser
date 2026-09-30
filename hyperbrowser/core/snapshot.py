@@ -22,6 +22,40 @@ _EXTRACT_INTERACTIVE_JS = """
         '[contenteditable="true"]', '[contenteditable=""]',
         '[role="textbox"]', '[role="combobox"]', '[tabindex]'
     ];
+
+    // 2026-08-19: hasEventListener 启发式 — 通用
+    // 动机: 部分平台列表项（如 Vue 2 列表 / React 列表）使用 _vei / __reactProps$
+    //     内部事件对象绑定，外部观察不到 onclick / tabindex / role
+    //     通过静态 on* 属性 + Vue/React 框架元数据 + 父级 3 层 ancestor 启发式
+    // 验证: BOSS 平台实测 li 没有任何标记 (vue2/vue3/react/angular/on*/_)
+    //     → BOSS 抓不到；Vue 2/React 平台有效
+    function hasEventListener(el) {
+        // 1. 静态 on* 属性 (onclick / onmousedown / onpointerdown ...)
+        if (el.attributes) {
+            for (const attr of el.attributes) {
+                if (/^on/i.test(attr.name)) return true;
+            }
+        }
+        // 2. 框架元数据 (Vue 2 __vueParentComponent / _vei / __vue__ /
+        //                Vue 3 __vnode / __vue_app__ /
+        //                React __reactProps$ / __reactInternalInstance$)
+        const keys = Object.keys(el);
+        for (const key of keys) {
+            if (key.startsWith('__vue') || key.startsWith('_v') || key.startsWith('__react')) return true;
+        }
+        return false;
+    }
+
+    // 父级 3 层 ancestor 启发式 — 捕获事件委托
+    function hasEventListenerInChain(el, maxDepth = 3) {
+        let cur = el.parentElement;
+        for (let i = 0; i < maxDepth && cur; i++) {
+            if (hasEventListener(cur)) return true;
+            cur = cur.parentElement;
+        }
+        return false;
+    }
+
     const seen = new Set();
     const results = [];
     let refCounter = 0;
@@ -61,6 +95,35 @@ _EXTRACT_INTERACTIVE_JS = """
             });
         }
     }
+
+    // 2026-08-19: 列表项事件委托检测 — 抓 [role="listitem"] 列表项
+    // 触发条件: 自身或 3 层 ancestor 有 listener（hasEventListener + hasEventListenerInChain）
+    // 覆盖范围: Vue 2 _vei / React __reactProps$ 等
+    // 已知缺口: BOSS 平台实测无任何标记 → 抓不到，需要其他方案（参考 BOSS 精确 selector）
+    const listItems = document.querySelectorAll('[role="listitem"]');
+    for (const li of listItems) {
+        if (seen.has(li)) continue;
+        if (!hasEventListener(li) && !hasEventListenerInChain(li, 3)) continue;
+
+        seen.add(li);
+        const rect = li.getBoundingClientRect();
+        if (rect.width < 2 || rect.height < 2) continue;
+
+        const ref = 'ref_' + refCounter++;
+        li.setAttribute('data-hyperbrowser-ref', ref);
+
+        results.push({
+            ref: ref,
+            tag: li.tagName.toLowerCase(),
+            text: (li.innerText || '').trim().slice(0, 120),
+            type: '',
+            role: li.getAttribute('role') || '',
+            href: '',
+            class: li.getAttribute('class') || '',
+            aria_disabled: li.getAttribute('aria-disabled') || ''
+        });
+    }
+
     return results;
 }
 """
